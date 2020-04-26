@@ -65,18 +65,6 @@
   :type 'string
   :group 'helm-xref)
 
-(defun helm-xref-candidates-26 (xrefs)
-  "Convert XREF-ALIST items to helm candidates and add them to `helm-xref-alist'."
-  (dolist (xref xrefs)
-    (with-slots (summary location) xref
-      (let* ((line (xref-location-line location))
-             (file (xref-location-group location))
-             candidate)
-        (setq candidate
-              (funcall helm-xref-candidate-formatting-function file line summary))
-        (push (cons candidate xref) helm-xref-alist))))
-  (setq helm-xref-alist (reverse helm-xref-alist)))
-
 (defun helm-xref--num-digits (num)
   "Get the number of digits in NUM."
   (if (< num 10)
@@ -102,6 +90,31 @@
                                                 digits))
       (_ 0))))
 
+(defun helm-xref-candidates-26 (xrefs)
+  "Convert XREF-ALIST items to helm candidates and add them to `helm-xref-alist'."
+  (let ((components (list))
+        (width nil))
+    (dolist (xref xrefs)
+      (with-slots (summary location) xref
+        (let* ((line (xref-location-line location))
+               (file (xref-location-group location)))
+          (push (list file line summary xref) components))))
+    (when helm-xref-locations-in-column
+      (pcase helm-xref-candidate-formatting-function
+        ((or 'helm-xref-format-candidate-short
+             'helm-xref-format-candidate-full-path)
+         (let ((max-width (seq-max
+                           (mapcar 'helm-xref--location-width components))))
+           (when (> max-width 0)
+             (setq width max-width))))))
+    (dolist (comp components)
+      (pcase-let* ((`(,file ,line ,summary ,xref) comp)
+                   (candidate (funcall
+                               helm-xref-candidate-formatting-function
+                               file line summary width)))
+        (push (cons candidate xref) helm-xref-alist))))
+  helm-xref-alist)
+
 (defun helm-xref-candidates-27 (fetcher alist)
   "Convert XREF-ALIST items to helm candidates and add them to `helm-xref-alist'."
   (cl-assert (functionp fetcher))
@@ -115,17 +128,13 @@
 	    (with-slots (summary location) xref
 	      (let* ((file (xref-location-group location))
                  (line (xref-location-line location)))
-            (message "%s:%d" file line)
             (push (list file line summary xref) components))))
       (when helm-xref-locations-in-column
         (pcase helm-xref-candidate-formatting-function
           ((or 'helm-xref-format-candidate-short
                'helm-xref-format-candidate-full-path)
-           (dolist (comp components)
-             (if comp (message "No") (message "Nil")))
            (let ((max-width (seq-max
                              (mapcar 'helm-xref--location-width components))))
-             (message "%d" max-width)
              (when (> max-width 0)
                (setq width max-width))))))
       (dolist (comp components)
