@@ -46,6 +46,11 @@
   "Face for xref line number"
   :group 'helm-xref)
 
+(defcustom helm-xref-locations-in-column nil
+  "Format the locations in xref output into columns."
+  :type 'boolean
+  :group 'helm-xref)
+
 (defcustom helm-xref-candidate-formatting-function 'helm-xref-format-candidate-short
   "Select the function for candidate formatting."
   :type '(radio
@@ -72,6 +77,31 @@
         (push (cons candidate xref) helm-xref-alist))))
   (setq helm-xref-alist (reverse helm-xref-alist)))
 
+(defun helm-xref--num-digits (num)
+  "Get the number of digits in NUM."
+  (if (< num 10)
+      1
+    (+ 1 (helm-xref--num-digits (/ num 10)))))
+
+(defun helm-xref--basename (path)
+  "Get the filename from the supplied PATH."
+  (car (reverse (split-string path "\\/"))))
+
+(defun helm-xref--location-width (component)
+  "Get the width of the formatted location in COMPONENT."
+  (pcase-let* ((`(,file ,line ,_ ,_) component)
+               (digits (if (string= "integer" (type-of line))
+                           (helm-xref--num-digits line)
+                         0)))
+    (pcase helm-xref-candidate-formatting-function
+      ('helm-xref-format-candidate-short (+ 1
+                                            (length (helm-xref--basename file))
+                                            digits))
+      ('helm-xref-format-candidate-full-path (+ 1
+                                                (length file)
+                                                digits))
+      (_ 0))))
+
 (defun helm-xref-candidates-27 (fetcher alist)
   "Convert XREF-ALIST items to helm candidates and add them to `helm-xref-alist'."
   (cl-assert (functionp fetcher))
@@ -79,52 +109,72 @@
           (or
            (assoc-default 'fetched-xrefs alist)
            (funcall fetcher))))
-	(dolist (xref xrefs)
-	  (with-slots (summary location) xref
-	    (let* ((line (xref-location-line location))
-		       (file (xref-location-group location))
-		       candidate)
-          (setq candidate
-		        (funcall helm-xref-candidate-formatting-function file line summary))
+    (let ((components (list))
+          (width nil))
+	  (dolist (xref xrefs)
+	    (with-slots (summary location) xref
+	      (let* ((file (xref-location-group location))
+                 (line (xref-location-line location)))
+            (message "%s:%d" file line)
+            (push (list file line summary xref) components))))
+      (when helm-xref-locations-in-column
+        (pcase helm-xref-candidate-formatting-function
+          ((or 'helm-xref-format-candidate-short
+               'helm-xref-format-candidate-full-path)
+           (dolist (comp components)
+             (if comp (message "No") (message "Nil")))
+           (let ((max-width (seq-max
+                             (mapcar 'helm-xref--location-width components))))
+             (message "%d" max-width)
+             (when (> max-width 0)
+               (setq width max-width))))))
+      (dolist (comp components)
+        (pcase-let* ((`(,file ,line ,summary ,xref) comp)
+                     (candidate (funcall
+                                 helm-xref-candidate-formatting-function
+                                 file line summary width)))
           (push (cons candidate xref) helm-xref-alist)))))
-  (setq helm-xref-alist (reverse helm-xref-alist)))
+  helm-xref-alist)
 
-(defun helm-xref-format-candidate-short (file line summary)
-  "Build short form of candidate format with FILE, LINE, and SUMMARY."
-  (concat
-   (propertize (car (reverse (split-string file "\\/")))
-	       'font-lock-face 'helm-xref-file-name)
-   (when (string= "integer" (type-of line))
-     (concat
-      ":"
-      (propertize (int-to-string line)
-		  'font-lock-face 'helm-xref-line-number)))
-   ":"
-   summary))
+(defun helm-xref-format-candidate-short (file line summary &optional width)
+  "Build short form of candidate format with FILE, LINE, and SUMMARY.
 
-(defun helm-xref-format-candidate-full-path (file line summary)
+If WIDTH is non-nil, use WIDTH columns for the location."
+  (let* ((file (propertize (helm-xref--basename file)
+	                       'font-lock-face 'helm-xref-file-name))
+         (line (if (string= "integer" (type-of line))
+                   (concat ":"
+                           (propertize (int-to-string line)
+		                               'font-lock-face 'helm-xref-line-number))
+                 ""))
+         (loc (concat file line))
+         (fmt (if width (format "%%-%ds  %%s" width) "%s  %s")))
+    (format fmt loc summary)))
+
+(defun helm-xref-format-candidate-full-path (file line summary &optional width)
   "Same as `helm-xref-format-candidate-short', but display entire path."
-  (concat
-   (propertize file 'font-lock-face 'helm-xref-file-name)
-   (when (string= "integer" (type-of line))
-     (concat
-      ":"
-      (propertize (int-to-string line)
-		  'font-lock-face 'helm-xref-line-number)))
-   ":"
-   summary))
+  (let* ((file (propertize file
+	                       'font-lock-face 'helm-xref-file-name))
+         (line (if (string= "integer" (type-of line))
+                   (concat ":"
+                           (propertize (int-to-string line)
+		                               'font-lock-face 'helm-xref-line-number))
+                 ""))
+         (loc (concat file line))
+         (fmt (if width (format "%%-%ds  %%s" width) "%s  %s")))
+    (format fmt loc summary)))
 
-(defun helm-xref-format-candidate-long (file line summary)
+(defun helm-xref-format-candidate-long (file line summary &optional _)
   "Use two lines for each candidate. One contains the path and the other the actual candidate."
-  (concat
-   (propertize file 'font-lock-face 'helm-xref-file-name)
-   (when (string= "integer" (type-of line))
-     (concat
-      "\n:"
-      (propertize (int-to-string line)
-		  'font-lock-face 'helm-xref-line-number)))
-   ":"
-   summary))
+  (let* ((file (propertize (helm-xref--basename file)
+	                       'font-lock-face 'helm-xref-file-name))
+         (line (if (string= "integer" (type-of line))
+                   (concat ":"
+                           (propertize (int-to-string line)
+		                               'font-lock-face 'helm-xref-line-number))
+                 ""))
+         (loc (concat file line)))
+    (concat loc "\n  " summary)))
 
 (defun helm-xref-goto-xref-item (item func)
   "Set buffer and point according to xref-item ITEM.
